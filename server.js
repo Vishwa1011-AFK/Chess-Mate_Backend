@@ -8,7 +8,7 @@ const app = express();
 app.use(cors());
 
 const server = http.createServer(app);
-const io = require("socket.io")(3000, {
+const io = require("socket.io")(3001, {
   cors: {
     origin: "https://chess-mate-one.vercel.app/",
   },
