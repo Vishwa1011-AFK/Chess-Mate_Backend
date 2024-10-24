@@ -49,10 +49,11 @@ The server will start running on port 3000, with Socket.IO listening on port 300
 
 This application is specifically designed to be deployed on Railway App, as it provides free hosting for WebSocket applications for personal use. Other platforms like Heroku or Render may have limitations with WebSocket connections in their free tiers.
 
-The server is configured to accept connections from:
+The server is hosted on the link:
 ```javascript
 https://chess-matebackend-production.up.railway.app/
 ```
+Please use at a limited rate as it is deployed on a free tier subscription.
 
 ## API Documentation
 
