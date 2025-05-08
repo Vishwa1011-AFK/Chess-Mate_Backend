@@ -52,6 +52,8 @@ function updateGameTimer(gameCode, turnSwitched = false) {
     elapsedSeconds = Math.floor((now - game.lastMoveTime) / 1000);
   }
 
+  if (elapsedSeconds < 1 && !turnSwitched) return;
+
   const currentTurnColorFull = game.chessGame.turn() === "w" ? "white" : "black";
 
   if (turnSwitched) {
@@ -63,12 +65,10 @@ function updateGameTimer(gameCode, turnSwitched = false) {
       );
     }
   } else {
-    if (elapsedSeconds >= 1) {
-      game.timeLeft[currentTurnColorFull] = Math.max(
-        0,
-        game.timeLeft[currentTurnColorFull] - elapsedSeconds
-      );
-    }
+    game.timeLeft[currentTurnColorFull] = Math.max(
+      0,
+      game.timeLeft[currentTurnColorFull] - 1
+    );
   }
 
   game.lastMoveTime = now;
@@ -77,6 +77,7 @@ function updateGameTimer(gameCode, turnSwitched = false) {
     checkGameOver(gameCode);
     return;
   }
+
   if (game.players.white) io.to(game.players.white).emit("timeUpdate", game.timeLeft);
   if (game.players.black) io.to(game.players.black).emit("timeUpdate", game.timeLeft);
 }
@@ -94,16 +95,12 @@ function checkGameOver(gameCode) {
     gameOverReason = "White wins: Black out of time";
   } else if (game.chessGame.isGameOver()) {
     if (game.chessGame.isCheckmate()) {
-      gameOverReason = `Checkmate: ${
-        game.chessGame.turn() === "w" ? "Black" : "White"
-      } wins`;
+      gameOverReason = `Checkmate: ${game.chessGame.turn() === "w" ? "Black" : "White"} wins`;
     } else if (game.chessGame.isDraw()) {
       gameOverReason = "Draw";
       if (game.chessGame.isStalemate()) gameOverReason = "Draw: Stalemate";
-      if (game.chessGame.isThreefoldRepetition())
-        gameOverReason = "Draw: Threefold Repetition";
-      if (game.chessGame.isInsufficientMaterial())
-        gameOverReason = "Draw: Insufficient Material";
+      if (game.chessGame.isThreefoldRepetition()) gameOverReason = "Draw: Threefold Repetition";
+      if (game.chessGame.isInsufficientMaterial()) gameOverReason = "Draw: Insufficient Material";
     }
   }
 
@@ -125,11 +122,13 @@ function checkGameOver(gameCode) {
     }
 
     games.delete(gameCode);
-    console.log(
-      `Game over: ${gameOverReason} in game ${gameCode}. Fen: ${fen}`
-    );
+    console.log(`Game over: ${gameOverReason} in game ${gameCode}. Fen: ${fen}`);
   }
 }
+
+app.get("/", (req, res) => {
+  res.status(200).send("ChessMate Server is running!");
+});
 
 io.on("connection", (socket) => {
   console.log("New client connected:", socket.id);
@@ -157,6 +156,8 @@ io.on("connection", (socket) => {
     });
     userGames.set(socket.id, gameCode);
 
+    socket.join(gameCode);
+
     socket.emit("gameCreated", {
       gameCode,
       color: playerColor,
@@ -164,9 +165,7 @@ io.on("connection", (socket) => {
       gameType,
       timeControl,
     });
-    console.log(
-      `Game created: ${gameCode}, Player: ${socket.id} as ${playerColor}, Type: ${gameType}, Time: ${timeControl} min`
-    );
+    console.log(`Game created: ${gameCode}, Player: ${socket.id} as ${playerColor}, Type: ${gameType}, Time: ${timeControl} min`);
   });
 
   socket.on("joinGame", (gameCode) => {
@@ -174,6 +173,7 @@ io.on("connection", (socket) => {
     if (!game) {
       return socket.emit("joinError", "Game not found");
     }
+
     if (game.players.white === socket.id || game.players.black === socket.id) {
       return socket.emit("joinError", "You are already in this game.");
     }
@@ -190,6 +190,8 @@ io.on("connection", (socket) => {
     }
 
     userGames.set(socket.id, gameCode);
+    socket.join(gameCode);
+
     socket.emit("gameJoined", {
       gameCode,
       color: joinedColor,
@@ -210,6 +212,7 @@ io.on("connection", (socket) => {
         timeLeft: game.timeLeft,
         timeControl: game.timeControl,
       });
+
       if (game.players.white && game.players.black) {
         startGameTimer(gameCode);
       }
@@ -220,9 +223,11 @@ io.on("connection", (socket) => {
   socket.on("makeMove", ({ gameCode, move }) => {
     const game = games.get(gameCode);
     if (!game) {
+      console.error(`Move attempt in non-existent game: ${gameCode}`);
       return socket.emit("moveError", "Game not found");
     }
     if (game.chessGame.isGameOver()) {
+      console.warn(`Move attempt in finished game: ${gameCode}`);
       return socket.emit("moveError", "Game is already over");
     }
 
@@ -231,10 +236,18 @@ io.on("connection", (socket) => {
         ? game.players.white
         : game.players.black;
     if (socket.id !== currentTurnPlayerSocketId) {
+      console.warn(`Move attempt by wrong player: ${socket.id} in game ${gameCode}`);
       return socket.emit("moveError", "Not your turn");
     }
 
-    const result = game.chessGame.move(move);
+    let result;
+    try {
+      result = game.chessGame.move(move);
+    } catch (error) {
+      console.error(`Error making move in game ${gameCode}:`, error.message);
+      return socket.emit("moveError", `Invalid move format or internal error: ${error.message}`);
+    }
+
     if (result) {
       const nextTurn = game.chessGame.turn();
       updateGameTimer(gameCode, true);
@@ -253,12 +266,11 @@ io.on("connection", (socket) => {
         timeLeft: game.timeLeft,
       };
 
-      if (game.players.white) io.to(game.players.white).emit("moveMade", payload);
-      if (game.players.black) io.to(game.players.black).emit("moveMade", payload);
-
+      io.to(gameCode).emit("moveMade", payload);
       checkGameOver(gameCode);
     } else {
-      socket.emit("moveError", "Invalid move: Move could not be made by chess.js");
+      console.warn(`Invalid move attempted by ${socket.id} in ${gameCode}:`, move);
+      socket.emit("moveError", "Invalid move");
     }
   });
 
@@ -292,32 +304,26 @@ io.on("connection", (socket) => {
         if (opponentSocketId && userGames.has(opponentSocketId)) {
           const disconnectedPlayerColorName = disconnectedPlayerColor === 'w' ? "White" : "Black";
           const winningPlayerColorName = disconnectedPlayerColor === 'w' ? "Black" : "White";
-          
+
           const message = game.chessGame.isGameOver()
             ? `Game over. ${disconnectedPlayerColorName} left.`
             : `${disconnectedPlayerColorName} disconnected. ${winningPlayerColorName} wins by forfeit.`;
-          
+
           io.to(opponentSocketId).emit("playerLeft", { message });
-          
+
           userGames.delete(opponentSocketId);
           games.delete(gameCode);
           console.log(`Game ${gameCode} ended and removed due to disconnect of player ${socket.id}.`);
         } else {
           games.delete(gameCode);
-          console.log(
-            `Game ${gameCode} removed. Player ${socket.id} (Color: ${disconnectedPlayerColor || 'unknown'}) disconnected. No active opponent.`
-          );
+          console.log(`Game ${gameCode} removed. Player ${socket.id} (Color: ${disconnectedPlayerColor || 'unknown'}) disconnected. No active opponent.`);
         }
       } else {
-        console.log(
-          `Player ${socket.id} disconnected, but game ${gameCode} was already finished or cleaned up.`
-        );
+        console.log(`Player ${socket.id} disconnected, but game ${gameCode} was already finished or cleaned up.`);
         userGames.delete(socket.id);
       }
     } else {
-      console.log(
-        `Player ${socket.id} disconnected but was not in any tracked active game.`
-      );
+      console.log(`Player ${socket.id} disconnected but was not in any tracked active game.`);
     }
   });
 });
